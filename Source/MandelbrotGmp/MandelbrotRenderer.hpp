@@ -11,6 +11,13 @@ public:
     void run();
 
 private:
+    enum class RenderingState
+    {
+        Rendering,
+        Completed,
+        Displayed
+    };
+
     int m_width;
     int m_height;
     int m_bufferSizeBytes;
@@ -24,7 +31,7 @@ private:
     View m_renderingView;
     View m_completedView;
     bool m_cancelling = false;
-    int m_completedThreads = 0;
+    RenderingState m_renderingState = RenderingState::Rendering;
 
     void handleEvents();
     void handleKeys(const sf::Event& event);
@@ -40,6 +47,8 @@ private:
     double mandelbrot(const Complex z0);
     void detailedDraw();
     void roughDraw();
+
+
 };
 
 sf::Color hueToRGB(double h);

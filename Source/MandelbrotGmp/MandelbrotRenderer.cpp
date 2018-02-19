@@ -20,7 +20,7 @@ MandelbrotRenderer::MandelbrotRenderer(int width, int height) :
     m_renderingThread(&MandelbrotRenderer::render, this),
     m_renderingView(-0.5, 0.0, 1.0, width, height)
 {
-    m_window.setVerticalSyncEnabled(true);
+    m_window.setFramerateLimit(60);
     m_window.setActive(false);
 }
 
@@ -233,16 +233,6 @@ void MandelbrotRenderer::draw()
     m_sprite.setTexture(m_buffer);
     m_completedView = m_renderingView;
 
-    // Parameters for multi-threaded software rendering.
-    // Each rendering thread will render a sub-rectangle of the pixel array.
-    // The rendering threads are stored in an array of Thread pointers since
-    // no empty constructor exists for sf::Thread and each thread needs to be
-    // initialised with a different rectangle parameter.
-    // Each thread is also passed a pointer to an integer, increment in value
-    // on completion.
-    constexpr bool RENDER_CONTINUOUSLY = true;
-    constexpr int ALREADY_DISPLAYED = -1;
-
     // Drawing Loop
     while (m_window.isOpen())
     {
@@ -257,41 +247,51 @@ void MandelbrotRenderer::draw()
             // Log the view of each rendering
             std::cout << m_renderingView << std::endl;
 
+            // No point running rendering threads for an outdated view
             cancelRendering();
-
-            m_completedThreads = 0;
 
             // Do a rough draw before relaunching rendering threads
             roughDraw();
             m_window.display();
+
             // Repeat the draw because of GL double buffering
             m_window.clear();
             m_window.draw(m_sprite);
             m_window.display();
 
             // Make pixels transparent until rendering threads set them
-            if (RENDER_CONTINUOUSLY)
-            {
 #pragma omp parallel for
-                for (int i = 0; i < m_bufferSizeBytes; ++i)
-                    m_renderingPixels[i] = 0;
-            }
+            for (int i = 0; i < m_bufferSizeBytes; ++i)
+                m_renderingPixels[i] = 0;
 
+            // Begin rendering
+            m_renderingState = RenderingState::Rendering;
             m_renderingThread.launch();
         }
 
-        // Draw good pixels
-        roughDraw();
+        // Can avoid drawing anything if nothing has changed.
+        bool shouldDisplay = false;
 
-        // Either:
-        //   render once all threads have completed
-        // or:
-        //   render continuously, unless no changes have occured since
-        if (m_completedThreads == 1)
+        // Draw the last completed view if anything will be superimposed on top of it
+        // In other words, if the current rendering is incomplete so partially transparent,
+        // or if the zoom box will require a redraw of the background.
+        if (m_renderingState == RenderingState::Rendering || m_renderingView.getZoomBoxIsShown())
         {
-            // Display the fully rendered buffer
-            detailedDraw();
+            roughDraw();
+            shouldDisplay = true;
+        }
 
+        // Draw the rendering buffer, unless it has already been displayed with no changes since.
+        if (m_renderingState != RenderingState::Displayed)
+        {
+            // Draw the partial or complete render
+            detailedDraw();
+            shouldDisplay = true;
+        }
+
+        // If the render has just been completed, copy it to the completed buffer
+        if (m_renderingState == RenderingState::Completed)
+        {
             // Keep a copy of this completed render for rough drawing when
             // moving the view
 #pragma omp parallel for
@@ -303,27 +303,21 @@ void MandelbrotRenderer::draw()
             m_completedView = m_renderingView;
 
             // Prevent the completed buffer from being repeatedly displayed
-            m_completedThreads = ALREADY_DISPLAYED;
-
-            if (!RENDER_CONTINUOUSLY)
-                std::cout << "Displayed" << std::endl;
-        }
-        else if (RENDER_CONTINUOUSLY && m_completedThreads != ALREADY_DISPLAYED)
-        {
-            // Display the partially rendered buffer
-            detailedDraw();
+            m_renderingState = RenderingState::Displayed;
         }
 
-        // Display zoom box on top of everything if it sould be shown
+        // Display zoom box on top of everything if it should be shown
         if (m_renderingView.getZoomBoxIsShown())
         {
             m_window.draw(m_renderingView.getZoomBoxShape());
+            shouldDisplay = true;
         }
 
-        // Display frame
-        m_window.display();
+        if (shouldDisplay)
+            m_window.display();
     }
 
+    // Free the buffers
     delete[] m_renderingPixels;
     delete[] m_completedPixels;
 }
@@ -332,7 +326,7 @@ void MandelbrotRenderer::draw()
 /// <summary>
 /// Renders to the m_renderingPixels buffer.
 /// Can be made to return early by setting m_cancelling to true.
-/// This function increments m_completedThreads when it finishes.
+/// This function increments m_renderingState when it finishes.
 /// </summary>
 void MandelbrotRenderer::render()
 {
@@ -340,6 +334,7 @@ void MandelbrotRenderer::render()
 #pragma omp parallel for
     for (int y = 0; y < m_height; ++y)
     {
+        // Check early exit flag
         if (m_cancelling)
             break;
 
@@ -361,6 +356,7 @@ void MandelbrotRenderer::render()
             if (m < 1)
                 c = hueToRGB(360 * m);
 
+            // Colour in the buffer
             sf::Uint8 *currentPixel = m_renderingPixels + 4 * (y * m_width + x);
             currentPixel[0] = c.r;
             currentPixel[1] = c.g;
@@ -369,7 +365,8 @@ void MandelbrotRenderer::render()
         }
     }
 
-    ++m_completedThreads;
+    // Rendering now complete
+    m_renderingState = RenderingState::Completed;
 }
 
 
@@ -408,7 +405,7 @@ double MandelbrotRenderer::mandelbrot(const Complex z0)
         // z[n+1] := z[n]^2 + z[0]
         // Handling the real and imaginary parts separately:
         z = Complex(z.x * z.x - z.y * z.y + z0.x,
-            TWO * z.x * z.y + z0.y);
+                    TWO * z.x * z.y + z0.y);
 
         // z is approximately unbounded if its magnitude exceeds some threshold
         if (z.x * z.x + z.y * z.y > THRESHOLD)
