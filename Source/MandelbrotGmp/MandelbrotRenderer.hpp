@@ -31,6 +31,7 @@ private:
     View m_renderingView;
     View m_completedView;
     bool m_cancelling = false;
+    bool m_resizing = false;
     RenderingState m_renderingState = RenderingState::Rendering;
 
     void handleEvents();

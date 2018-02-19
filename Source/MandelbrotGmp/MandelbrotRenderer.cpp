@@ -27,8 +27,13 @@ MandelbrotRenderer::MandelbrotRenderer(int width, int height) :
 
 MandelbrotRenderer::~MandelbrotRenderer()
 {
-    // Note: m_renderingPixels and m_completed pixels are freed at the end
+    // Note: m_renderingPixels and m_completedPixels are usually freed at the end
     // of MandelbrotRenderer::draw()
+    if (m_renderingPixels != nullptr)
+        delete[] m_renderingPixels;
+
+    if (m_completedPixels != nullptr)
+        delete[] m_completedPixels;
 }
 
 
@@ -198,16 +203,19 @@ void MandelbrotRenderer::handleMouseWheel(const sf::Event& event)
 /// <param name="event">Window Resized Event Union</param>
 void MandelbrotRenderer::handleResize(const sf::Event& event)
 {
+    m_resizing = true;
     cancelRendering();
+    m_drawingThread.wait();
+
     m_width = event.size.width;
     m_height = event.size.height;
     m_bufferSizeBytes = 4 * m_width * m_height;
-    m_renderingPixels = new sf::Uint8[m_bufferSizeBytes];
-    m_completedPixels = new sf::Uint8[m_bufferSizeBytes];
-    m_buffer.create(m_width, m_height);
-    m_sprite.setTexture(m_buffer);
+
     m_renderingView.resizeScreen(event.size.width, event.size.height);
     m_completedView.resizeScreen(event.size.width, event.size.height);
+
+    m_resizing = false;
+    m_drawingThread.launch();
 }
 
 
@@ -234,7 +242,7 @@ void MandelbrotRenderer::draw()
     m_completedView = m_renderingView;
 
     // Drawing Loop
-    while (m_window.isOpen())
+    while (m_window.isOpen() && !m_resizing)
     {
         // Dirty view means changes have occured.
         // Kill off any currently running rendering threads and relaunch
@@ -320,6 +328,11 @@ void MandelbrotRenderer::draw()
     // Free the buffers
     delete[] m_renderingPixels;
     delete[] m_completedPixels;
+
+    m_renderingPixels = nullptr;
+    m_completedPixels = nullptr;
+
+    m_window.setActive(false);
 }
 
 
@@ -462,11 +475,22 @@ void MandelbrotRenderer::roughDraw()
 /// <returns>Colour in RGB format</returns>
 sf::Color hueToRGB(double h) {
     sf::Uint8 x = static_cast<sf::Uint8>(0xFF * (1 - abs(fmod((h / 60.0), 2) - 1.0)));
-    if      (h <  60) return sf::Color(0xFFu, x, 0u);
-    else if (h < 120) return sf::Color(x, 0xFFu, 0u);
-    else if (h < 180) return sf::Color(0u, 0xFFu, x);
-    else if (h < 240) return sf::Color(0u, x, 0xFFu);
-    else if (h < 300) return sf::Color(x, 0u, 0xFFu);
-    else if (h < 360) return sf::Color(0xFFu, 0u, x);
-    else              return sf::Color();
+
+    switch (static_cast<int>(h) / 60)
+    {
+    case 0:
+        return sf::Color(0xFF, x, 0);
+    case 1:
+        return sf::Color(x, 0xFF, 0);
+    case 2:
+        return sf::Color(0, 0xFF, x);
+    case 3:
+        return sf::Color(0, x, 0xFF);
+    case 4:
+        return sf::Color(x, 0, 0xFF);
+    case 5:
+        return sf::Color(0xFF, 0, x);
+    default:
+        return sf::Color();
+    }
 }
